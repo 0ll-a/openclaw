@@ -1,0 +1,60 @@
+# OpenClaw Railway Deployment Configuration
+# See https://railway.app/docs/deploy/dockerfiles
+
+[build]
+dockerfile = "Dockerfile"
+
+[build.args]
+# Customize extensions here: OPENCLAW_EXTENSIONS="matrix,diagnostics-otel"
+OPENCLAW_EXTENSIONS = ""
+OPENCLAW_BUNDLED_PLUGIN_DIR = "extensions"
+OPENCLAW_DOCKER_BUILD_SKIP_DTS = "1"
+
+[env]
+# Production environment
+NODE_ENV = "production"
+
+# Use pnpm (required for workspace builds)
+OPENCLAW_PREFER_PNPM = "1"
+
+# State and workspace directories on Railway persistent storage
+OPENCLAW_STATE_DIR = "/data/.openclaw"
+OPENCLAW_WORKSPACE_DIR = "/data/workspace"
+
+# Railway provides PORT via environment variable
+# This will be populated at runtime
+# PORT = will be set by Railway
+
+# Memory optimization for Railway's shared CPU environments
+NODE_OPTIONS = "--max-old-space-size=1536"
+
+# Disable Bonjour (not useful in containerized environments)
+OPENCLAW_DISABLE_BONJOUR = "1"
+
+# Optional: Enable OpenTelemetry if you have an OTLP collector
+# OTEL_EXPORTER_OTLP_ENDPOINT = "https://your-otel-collector.example.com:4318"
+
+[deploy]
+# Watch for changes in these files to trigger redeploy
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 5
+
+[[volumes]]
+name = "openclaw-data"
+mountPath = "/data"
+
+[processes]
+web = "node dist/index.js gateway --allow-unconfigured --port $PORT --bind 0.0.0.0"
+
+# Optional: Add a background worker for maintenance tasks
+# worker = "node dist/index.js cli maintenance --continuous"
+
+[healthCheck]
+# Health check configuration
+httpPath = "/healthz"
+httpPort = 3000
+initialDelaySeconds = 10
+intervalSeconds = 30
+timeoutSeconds = 5
+successThreshold = 1
+failureThreshold = 3
