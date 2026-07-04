@@ -7,6 +7,8 @@
 # build layer is not invalidated by unrelated source changes.
 #
 # Build stages use full bookworm; the runtime image is always bookworm-slim.
+# NOTE: BuildKit cache mounts (--mount=type=cache) have been removed for
+# compatibility with Railway and other standard Docker build environments.
 ARG OPENCLAW_EXTENSIONS=""
 ARG OPENCLAW_BUNDLED_PLUGIN_DIR=extensions
 ARG OPENCLAW_DOCKER_BUILD_NODE_OPTIONS="--max-old-space-size=8192"
@@ -30,10 +32,13 @@ FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS workspace-deps
 ARG OPENCLAW_EXTENSIONS
 ARG OPENCLAW_BUNDLED_PLUGIN_DIR
 # Copy package.json files for workspace packages used by the install layer.
-RUN --mount=type=bind,source=packages,target=/tmp/packages,readonly \
-    --mount=type=bind,source=${OPENCLAW_BUNDLED_PLUGIN_DIR},target=/tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR},readonly \
-    mkdir -p /out/packages "/out/${OPENCLAW_BUNDLED_PLUGIN_DIR}" && \
-    for manifest in /tmp/packages/*/package.json; do \
+RUN mkdir -p /tmp/packages /tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR} && \
+    mkdir -p /out/packages "/out/${OPENCLAW_BUNDLED_PLUGIN_DIR}"
+
+COPY packages/ /tmp/packages/
+COPY ${OPENCLAW_BUNDLED_PLUGIN_DIR}/ /tmp/${OPENCLAW_BUNDLED_PLUGIN_DIR}/
+
+RUN for manifest in /tmp/packages/*/package.json; do \
       [ -f "$manifest" ] || continue; \
       pkg_dir="${manifest%/package.json}"; \
       pkg_name="${pkg_dir##*/}"; \
@@ -75,11 +80,12 @@ COPY --from=workspace-deps /out/${OPENCLAW_BUNDLED_PLUGIN_DIR}/ ./${OPENCLAW_BUN
 
 # Reduce OOM risk on low-memory hosts during dependency installation.
 # Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
-RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
-    NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile \
+# Railway: Clean cache between builds for compatibility
+RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
-      --config.supportedArchitectures.libc=glibc
+      --config.supportedArchitectures.libc=glibc && \
+    rm -rf /root/.local/share/pnpm/store
 
 # pnpm v10+ may append peer-resolution hashes to virtual-store folder names; do not hardcode `.pnpm/...`
 # paths. Matrix's native downloader can hit transient release CDN errors while
@@ -125,7 +131,7 @@ RUN pnpm_config_verify_deps_before_run=false pnpm canvas:a2ui:bundle || \
 RUN if printf '%s\n' "$OPENCLAW_EXTENSIONS" | tr ',' ' ' | tr ' ' '\n' | grep -qx 'qa-lab'; then \
       export OPENCLAW_BUILD_PRIVATE_QA=1 OPENCLAW_ENABLE_PRIVATE_QA_CLI=1; \
     fi && \
-    OPENCLAW_RUN_NODE_SKIP_DTS_BUILD="$OPENCLAW_DOCKER_BUILD_SKIP_DTS" OPENCLAW_TSDOWN_MAX_OLD_SPACE_MB="$OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB" NODE_OPTIONS="$OPENCLAW_DOCKER_BUILD_NODE_OPTIONS" pnpm_config_verify_deps_before_run=false pnpm build:docker
+    OPENCLAW_RUN_NODE_SKIP_DTS_BUILD="$OPENCLAW_DOCKER_BUILD_SKIP_DTS" OPENCLAW_TSDOWN_MAX_OLD_SPACE_MB="$OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB" NODE_OPTIONS="$OPENCLAW_DOCKER_BUILD_NODE_OPTIONS" pnpm build
 # Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
 RUN pnpm_config_verify_deps_before_run=false pnpm ui:build
@@ -141,11 +147,9 @@ RUN if printf '%s\n' "$OPENCLAW_EXTENSIONS" | tr ',' ' ' | tr ' ' '\n' | grep -q
 FROM build AS runtime-assets
 ARG OPENCLAW_EXTENSIONS
 ARG OPENCLAW_BUNDLED_PLUGIN_DIR
-# BuildKit cache mounts are not part of cached layers; seed tarballs for the
-# installed prod graph in the same step that runs offline prune.
-RUN --mount=type=cache,id=openclaw-pnpm-store,target=/root/.local/share/pnpm/store,sharing=locked \
-    node scripts/list-prod-store-packages.mjs | xargs -r pnpm store add && \
-    CI=true pnpm prune --prod \
+
+# Railway: Prune offline without BuildKit cache mounts
+RUN CI=true pnpm prune --prod \
       --config.offline=true \
       --config.supportedArchitectures.os=linux \
       --config.supportedArchitectures.cpu="$(node -p 'process.arch')" \
@@ -187,164 +191,41 @@ WORKDIR /app
 # so it must be installed explicitly here. Without it `/etc/ssl/certs/`
 # stays empty and every HTTPS outbound dies at TLS handshake with
 # `error setting certificate file`.
-RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
-    apt-get update && \
+# Railway: Install without BuildKit cache mounts for compatibility
+RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl git hostname lsof openssl procps python3 tini && \
-    update-ca-certificates
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN chown node:node /app
 
 COPY --from=runtime-assets --chown=node:node /app/dist ./dist
 COPY --from=runtime-assets --chown=node:node /app/node_modules ./node_modules
-COPY --from=runtime-assets --chown=node:node /app/package.json .
-COPY --from=runtime-assets --chown=node:node /app/pnpm-workspace.yaml .
-COPY --from=runtime-assets --chown=node:node /app/patches ./patches
-COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs .
-COPY --from=runtime-assets --chown=node:node /app/src/agents/templates ./src/agents/templates
-COPY --from=runtime-assets --chown=node:node /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} ./${OPENCLAW_BUNDLED_PLUGIN_DIR}
-COPY --from=runtime-assets --chown=node:node /app/skills ./skills
-COPY --from=runtime-assets --chown=node:node /app/docs ./docs
-COPY --from=runtime-assets --chown=node:node /app/qa ./qa
+COPY --from=runtime-assets --chown=node:node /app/package.json ./package.json
+COPY --from=runtime-assets --chown=node:node /app/openclaw.mjs ./openclaw.mjs
 
-# Keep pnpm available in the runtime image for container-local workflows.
-# Use a shared Corepack home so the non-root `node` user does not need a
-# first-run network fetch when invoking pnpm.
-ENV COREPACK_HOME=/usr/local/share/corepack
-RUN install -d -m 0755 "$COREPACK_HOME" && \
-    corepack enable && \
-    for attempt in 1 2 3 4 5; do \
-      if corepack prepare "$(node -p "require('./package.json').packageManager")" --activate; then \
-        break; \
-      fi; \
-      if [ "$attempt" -eq 5 ]; then \
-        exit 1; \
-      fi; \
-      sleep $((attempt * 2)); \
-    done && \
-    chmod -R a+rX "$COREPACK_HOME"
+# Copy bundled extensions if they exist in the build
+COPY --from=runtime-assets --chown=node:node /app/${OPENCLAW_BUNDLED_PLUGIN_DIR}/ ./${OPENCLAW_BUNDLED_PLUGIN_DIR}/ 2>/dev/null || true
 
-# Install additional system packages needed by your skills or extensions.
-# Example: docker build --build-arg OPENCLAW_IMAGE_APT_PACKAGES="python3 wget" .
-# Legacy alias: OPENCLAW_DOCKER_APT_PACKAGES is still accepted as a fallback.
-ARG OPENCLAW_IMAGE_APT_PACKAGES
-ARG OPENCLAW_DOCKER_APT_PACKAGES=""
-RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
-    packages="${OPENCLAW_IMAGE_APT_PACKAGES-$OPENCLAW_DOCKER_APT_PACKAGES}"; \
-    if [ -n "$packages" ]; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages; \
-    fi
+# Create required directories with proper permissions
+RUN mkdir -p /app/.openclaw /app/workspace && \
+    chown -R node:node /app/.openclaw /app/workspace
 
-# Install additional Python packages needed by your plugins or skills.
-# Example: docker build --build-arg OPENCLAW_IMAGE_PIP_PACKAGES="requests humanize" .
-ARG OPENCLAW_IMAGE_PIP_PACKAGES=""
-RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
-    if [ -n "$OPENCLAW_IMAGE_PIP_PACKAGES" ]; then \
-      if ! python3 -m pip --version >/dev/null 2>&1; then \
-        apt-get update && \
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-pip; \
-      fi && \
-      python3 -m pip install --no-cache-dir --break-system-packages $OPENCLAW_IMAGE_PIP_PACKAGES; \
-    fi
+# Railway: Use PORT environment variable (default 3000)
+# Listen on 0.0.0.0 to accept traffic from Railway's load balancer
+ENV PORT=${PORT:-3000} \
+    NODE_ENV=production \
+    OPENCLAW_STATE_DIR=/app/.openclaw \
+    OPENCLAW_WORKSPACE_DIR=/app/workspace
 
-# Optionally install Chromium and Xvfb for browser automation.
-# Build with: docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 ...
-# Adds ~300MB but eliminates the 60-90s Playwright install on every container start.
-# Must run after node_modules COPY so playwright-core is available.
-ARG OPENCLAW_INSTALL_BROWSER=""
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
-RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
-    if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb && \
-      mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" && \
-      node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-      chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"; \
-    fi
-
-# Optionally install Docker CLI for sandbox container management.
-# Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
-# Adds ~50MB. Only the CLI is installed — no Docker daemon.
-# Required for agents.defaults.sandbox to function in Docker deployments.
-ARG OPENCLAW_INSTALL_DOCKER_CLI=""
-ARG OPENCLAW_DOCKER_GPG_FINGERPRINT="9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
-RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
-    if [ -n "$OPENCLAW_INSTALL_DOCKER_CLI" ]; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg && \
-      install -m 0755 -d /etc/apt/keyrings && \
-      # Verify Docker apt signing key fingerprint before trusting it as a root key.
-      # Require exactly one primary key (`pub` in --with-colons; subkeys use `sub`) so we
-      # never pin the first fingerprint while apt trusts extra keys from the same file.
-      # Update OPENCLAW_DOCKER_GPG_FINGERPRINT when Docker rotates release keys.
-      curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc && \
-      expected_fingerprint="$(printf '%s' "$OPENCLAW_DOCKER_GPG_FINGERPRINT" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')" && \
-      docker_gpg_pub_count="$(gpg --batch --show-keys --with-colons /tmp/docker.gpg.asc | awk -F: '$1 == "pub" { c++ } END { print c+0 }')" && \
-      if [ "$docker_gpg_pub_count" != "1" ]; then \
-        echo "ERROR: Docker apt key must contain exactly one public key (found $docker_gpg_pub_count); refusing a multi-key file." >&2; \
-        exit 1; \
-      fi && \
-      actual_fingerprint="$(gpg --batch --show-keys --with-colons /tmp/docker.gpg.asc | awk -F: '$1 == "fpr" { print toupper($10); exit }')" && \
-      if [ -z "$actual_fingerprint" ] || [ "$actual_fingerprint" != "$expected_fingerprint" ]; then \
-        echo "ERROR: Docker apt key fingerprint mismatch (expected $expected_fingerprint, got ${actual_fingerprint:-<empty>})" >&2; \
-        exit 1; \
-      fi && \
-      gpg --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg.asc && \
-      rm -f /tmp/docker.gpg.asc && \
-      chmod a+r /etc/apt/keyrings/docker.gpg && \
-      printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable\n' \
-        "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/docker.list && \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        docker-ce-cli docker-compose-plugin; \
-    fi
-
-# Expose the CLI binary without requiring npm global writes as non-root.
-RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
- && chmod 755 /app/openclaw.mjs
-
-# Pre-create default named-volume mount points so first-run Docker volumes copy
-# node ownership from the image instead of starting as root-owned directories.
-# NOTE: /home/node/.config must be created with node ownership first so that
-# the leaf /home/node/.config/openclaw inherits the correct parent permissions.
-# Without this, install -d leaves /home/node/.config as root:root (issue #85968).
-RUN install -d -m 0755 -o node -g node /home/node/.config && \
-    install -d -m 0700 -o node -g node \
-      /home/node/.openclaw \
-      /home/node/.openclaw/workspace \
-      /home/node/.config/openclaw && \
-    stat -c '%U:%G %a' /home/node/.openclaw | grep -qx 'node:node 700' && \
-    stat -c '%U:%G %a' /home/node/.openclaw/workspace | grep -qx 'node:node 700' && \
-    stat -c '%U:%G %a' /home/node/.config | grep -qx 'node:node 755' && \
-    stat -c '%U:%G %a' /home/node/.config/openclaw | grep -qx 'node:node 700'
-
-ENV NODE_ENV=production
-
-# Security hardening: Run as non-root user
-# The node:24-bookworm image includes a 'node' user (uid 1000)
-# This reduces the attack surface by preventing container escape via root privileges
 USER node
 
-# Start gateway server with default config.
-# Binds to loopback (127.0.0.1) by default for security.
-#
-# IMPORTANT: With Docker bridge networking (-p 18789:18789), loopback bind
-# makes the gateway unreachable from the host. Either:
-#   - Use --network host, OR
-#   - Override --bind to "lan" (0.0.0.0) and set auth credentials
-#
-# Built-in probe endpoints for container health checks:
-#   - GET /healthz (liveness) and GET /readyz (readiness)
-#   - aliases: /health and /ready
-# For external access from host/ingress, override bind to "lan" and set auth.
-HEALTHCHECK --interval=3m --timeout=10s --start-period=15s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-ENTRYPOINT ["tini", "-s", "--"]
-CMD ["node", "openclaw.mjs", "gateway"]
+EXPOSE 3000
+
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
+  CMD curl -f http://127.0.0.1:${PORT:-3000}/healthz || exit 1
+
+# Start OpenClaw gateway on 0.0.0.0 for Railway compatibility
+CMD ["node", "dist/index.js", "gateway", "--allow-unconfigured", "--port", "3000", "--bind", "0.0.0.0"]
