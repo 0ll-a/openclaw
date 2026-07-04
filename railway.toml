@@ -1,41 +1,39 @@
 # OpenClaw Railway Deployment Configuration
-# See https://railway.app/docs/deploy/dockerfiles
+# Auto-generated for production deployment
+# See https://railway.app/docs
 
 [build]
 dockerfile = "Dockerfile"
 
 [build.args]
-# Customize extensions here: OPENCLAW_EXTENSIONS="matrix,diagnostics-otel"
 OPENCLAW_EXTENSIONS = ""
 OPENCLAW_BUNDLED_PLUGIN_DIR = "extensions"
 OPENCLAW_DOCKER_BUILD_SKIP_DTS = "1"
 
 [env]
-# Production environment
+# Production configuration
 NODE_ENV = "production"
+LOG_LEVEL = "info"
 
-# Use pnpm (required for workspace builds)
+# Workspace and state
 OPENCLAW_PREFER_PNPM = "1"
-
-# State and workspace directories on Railway persistent storage
 OPENCLAW_STATE_DIR = "/data/.openclaw"
 OPENCLAW_WORKSPACE_DIR = "/data/workspace"
+OPENCLAW_CONFIG_DIR = "/data/.openclaw"
 
-# Railway provides PORT via environment variable
-# This will be populated at runtime
-# PORT = will be set by Railway
-
-# Memory optimization for Railway's shared CPU environments
-NODE_OPTIONS = "--max-old-space-size=1536"
-
-# Disable Bonjour (not useful in containerized environments)
+# Network
 OPENCLAW_DISABLE_BONJOUR = "1"
+OPENCLAW_ALLOW_INSECURE_PRIVATE_WS = "false"
 
-# Optional: Enable OpenTelemetry if you have an OTLP collector
-# OTEL_EXPORTER_OTLP_ENDPOINT = "https://your-otel-collector.example.com:4318"
+# Performance
+NODE_OPTIONS = "--max-old-space-size=1536 --enable-source-maps"
+OPENCLAW_PREFER_PNPM = "1"
+
+# Security
+SECURE_COOKIES = "true"
+TRUST_PROXY = "true"
 
 [deploy]
-# Watch for changes in these files to trigger redeploy
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
 
@@ -44,17 +42,13 @@ name = "openclaw-data"
 mountPath = "/data"
 
 [processes]
-web = "node dist/index.js gateway --allow-unconfigured --port $PORT --bind 0.0.0.0"
-
-# Optional: Add a background worker for maintenance tasks
-# worker = "node dist/index.js cli maintenance --continuous"
+web = "node dist/index.js gateway --allow-unconfigured --port \"${PORT:-3000}\" --bind 0.0.0.0"
 
 [healthCheck]
-# Health check configuration
 httpPath = "/healthz"
 httpPort = 3000
-initialDelaySeconds = 10
+initialDelaySeconds = 15
 intervalSeconds = 30
-timeoutSeconds = 5
+timeoutSeconds = 10
 successThreshold = 1
 failureThreshold = 3

@@ -1,78 +1,86 @@
+# Git
 .git
-.worktrees
+.gitignore
+.gitattributes
+.github
+.gitmodules
 
-# Sensitive files – scripts/docker/setup.sh writes .env with OPENCLAW_GATEWAY_TOKEN
-# into the project root; keep it out of the build context.
-.env
-.env.*
-
-.bun-cache
-.bun
-.artifacts
-**/.artifacts
-.local
-**/.local
-.pi
-**/.pi
-__openclaw_vitest__
-**/__openclaw_vitest__
-.tmp
-**/.tmp
-.DS_Store
-**/.DS_Store
-*.png
-*.jpg
-*.jpeg
-*.webp
-*.gif
-*.mp4
-*.mov
-*.wav
-*.mp3
+# Dependencies
 node_modules
-**/node_modules
 .pnpm-store
-**/.pnpm-store
-.turbo
-**/.turbo
-.cache
-**/.cache
-.next
-**/.next
-coverage
-**/coverage
-docs/.generated
-**/.generated
-*.log
-tmp
-**/tmp
-dist-runtime
-**/dist-runtime
-openclaw-path-alias-*
+.npm
+.yarn
 
-# build artifacts
+# Build artifacts
 dist
-**/dist
-apps/macos/.build
-apps/ios/build
-**/*.trace
+build
+.turbo
+.cache
 
-# large app trees not needed for CLI build
-apps/
-vendor/
+# Development
+.env
+.env.local
+.env.*.local
+.vscode
+.idea
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
 
-# Needed for building the Canvas A2UI bundle during Docker image builds.
-# Keep the rest of apps/ and vendor/ excluded to avoid a large build context.
-!apps/shared/
-!apps/shared/OpenClawKit/
-!apps/shared/OpenClawKit/Sources/
-!apps/shared/OpenClawKit/Sources/OpenClawKit/
-!apps/shared/OpenClawKit/Sources/OpenClawKit/Resources/
-!apps/shared/OpenClawKit/Sources/OpenClawKit/Resources/tool-display.json
-!apps/shared/OpenClawKit/Tools/
-!apps/shared/OpenClawKit/Tools/CanvasA2UI/
-!apps/shared/OpenClawKit/Tools/CanvasA2UI/**
-!vendor/a2ui/
-!vendor/a2ui/renderers/
-!vendor/a2ui/renderers/lit/
-!vendor/a2ui/renderers/lit/**
+# Testing
+coverage
+.nyc_output
+.mocha
+test
+spec
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# CI/CD
+.github
+.gitlab-ci.yml
+.circleci
+.travis.yml
+Jenkinsfile
+
+# Documentation
+docs
+README.md
+CHANGELOG.md
+CONTRIBUTING.md
+LICENSE
+
+# Package managers
+pnpm-lock.yaml.backup
+package-lock.json
+yarn.lock
+npm-shrinkwrap.json.backup
+
+# Misc
+.turborc
+.prettierrc
+.eslintignore
+.editorconfig
+.pre-commit-config.yaml
+fly.toml
+render.yaml
+appcast.xml
+taxonomy.yaml
+.oxfmtrc.jsonc
+.oxlintrc.json
+.oxlinttree.jsonc
+.semgrepignore
+
+# Development scripts
+scripts
+test
+
+# Temporary
+*.tmp
+*.temp
+.tmp
